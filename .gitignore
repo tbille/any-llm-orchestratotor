@@ -20,3 +20,5 @@ specs/
 
 # Playwright MCP artifacts
 .playwright-mcp/
+
+.DS_Store

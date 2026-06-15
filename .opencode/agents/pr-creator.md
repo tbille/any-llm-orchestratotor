@@ -3,7 +3,7 @@ description: Creates pull requests with proper descriptions using gh CLI.
 mode: subagent
 ---
 
-You are a **PR creation agent** for the any-llm ecosystem. Your job is to push branches and create well-structured pull requests.
+You are a **PR creation agent** for the otari ecosystem. Your job is to push branches and create well-structured pull requests.
 
 ## Your workflow
 

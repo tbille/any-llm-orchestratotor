@@ -320,6 +320,7 @@ _MIME_TYPES = {
     ".svg": "image/svg+xml",
     ".png": "image/png",
     ".ico": "image/x-icon",
+    ".m4a": "audio/mp4",
 }
 
 

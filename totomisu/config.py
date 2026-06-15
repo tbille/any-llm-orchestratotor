@@ -1,4 +1,4 @@
-"""Repository registry and path configuration for the any-llm ecosystem."""
+"""Repository registry and path configuration for the otari ecosystem."""
 
 from __future__ import annotations
 
@@ -56,15 +56,17 @@ REPOS: tuple[RepoInfo, ...] = (
         github_url="https://github.com/mozilla-ai/any-llm",
         language="python",
         description=(
-            "Python SDK providing a common interface for LLM calls. "
-            "Supports direct provider calls and gateway communication."
+            "Python library providing a common interface for LLM calls. "
+            "Used by the otari gateway to talk to LLM providers, and "
+            "supports direct provider calls as well."
         ),
         scope_notes=(
-            "This repo contains a gateway provider (client code for talking "
-            "to the gateway). That provider code IS in scope. However, the "
-            "gateway server code has moved to the standalone 'gateway' "
-            "repository -- do NOT add or modify gateway server code in this "
-            "repo. Only the gateway provider/client code lives here."
+            "This repo is the LLM-interaction library that the otari gateway "
+            "uses internally to reach providers. It is NOT the otari gateway "
+            "server and NOT the otari Python SDK. Do NOT add gateway server "
+            "code here (that lives in 'otari') and do NOT add gateway client "
+            "SDK code here (that lives in 'otari-sdk-python'). Only the "
+            "provider-interaction library code lives here."
         ),
         test_hints=(
             "NEVER run the full test suite (e.g. `uv run pytest tests/unit` "
@@ -84,12 +86,12 @@ REPOS: tuple[RepoInfo, ...] = (
         ),
     ),
     RepoInfo(
-        name="gateway",
-        github_url="https://github.com/mozilla-ai/gateway",
+        name="otari",
+        github_url="https://github.com/mozilla-ai/otari",
         language="python",
         description=(
-            "LLM gateway service. Routes requests through the any-llm SDK "
-            "to various LLM providers. Captures observability data."
+            "LLM gateway service. Routes requests through the any-llm "
+            "library to various LLM providers. Captures observability data."
         ),
         test_hints=(
             "NEVER run the full test suite (e.g. `uv run pytest` without a "
@@ -108,10 +110,31 @@ REPOS: tuple[RepoInfo, ...] = (
         ),
     ),
     RepoInfo(
-        name="any-llm-rust",
-        github_url="https://github.com/mozilla-ai/any-llm-rust",
+        name="otari-sdk-python",
+        github_url="https://github.com/mozilla-ai/otari-sdk-python",
+        language="python",
+        description="Python SDK for communicating with the otari gateway.",
+        test_hints=(
+            "NEVER run the full test suite (e.g. `uv run pytest` without a "
+            "specific path). The full suite is slow and runs in CI. "
+            "Run ONLY the specific test files related to your changes: "
+            "uv run pytest tests/<relevant_test_file> -x -q. "
+            "For linting: uv run ruff check . && uv run mypy."
+        ),
+        test_command="uv run pytest -x -q --timeout=60",
+        targeted_test_command="uv run pytest {targets} -x -q --timeout=60",
+        pragma_validators=(
+            "security",
+            "state-machine",
+            "error-handling",
+            "python-style",
+        ),
+    ),
+    RepoInfo(
+        name="otari-sdk-rust",
+        github_url="https://github.com/mozilla-ai/otari-sdk-rust",
         language="rust",
-        description="Rust SDK for communicating with the any-llm gateway.",
+        description="Rust SDK for communicating with the otari gateway.",
         test_hints=(
             "NEVER run the full test suite (e.g. `cargo test --all-features` "
             "without a filter). The full suite is slow and runs in CI. "
@@ -125,10 +148,10 @@ REPOS: tuple[RepoInfo, ...] = (
         pragma_validators=("security", "state-machine", "error-handling"),
     ),
     RepoInfo(
-        name="any-llm-go",
-        github_url="https://github.com/mozilla-ai/any-llm-go",
+        name="otari-sdk-go",
+        github_url="https://github.com/mozilla-ai/otari-sdk-go",
         language="go",
-        description="Go SDK for communicating with the any-llm gateway.",
+        description="Go SDK for communicating with the otari gateway.",
         test_hints=(
             "NEVER run the full test suite (e.g. `go test ./...`). "
             "The full suite is slow and runs in CI. "
@@ -147,10 +170,10 @@ REPOS: tuple[RepoInfo, ...] = (
         ),
     ),
     RepoInfo(
-        name="any-llm-ts",
-        github_url="https://github.com/mozilla-ai/any-llm-ts",
+        name="otari-sdk-ts",
+        github_url="https://github.com/mozilla-ai/otari-sdk-ts",
         language="typescript",
-        description="TypeScript SDK for communicating with the any-llm gateway.",
+        description="TypeScript SDK for communicating with the otari gateway.",
         test_hints=(
             "NEVER run the full test suite (e.g. `npm test` without args). "
             "The full suite is slow and runs in CI. "
@@ -169,14 +192,13 @@ REPOS: tuple[RepoInfo, ...] = (
         ),
     ),
     RepoInfo(
-        name="any-llm-platform",
-        github_url="https://github.com/mozilla-ai/any-llm-platform",
+        name="otari-ai",
+        github_url="https://github.com/mozilla-ai/otari-ai",
         language="python",
         description=(
             "Managed platform for budgets, users, and observability. "
             "Pulls observability data from the gateway."
         ),
-        default_branch="develop",
         test_hints=(
             "NEVER run the full test suite (e.g. `uv run pytest` without a "
             "specific path). The full suite is slow and runs in CI. "
@@ -200,36 +222,36 @@ REPO_BY_NAME: dict[str, RepoInfo] = {r.name: r for r in REPOS}
 # ── Ecosystem context (shared with all agents) ───────────────────────
 
 ECOSYSTEM_CONTEXT = """\
-# any-llm Ecosystem
+# otari Ecosystem
 
 ## Repositories and relationships
 
 | Repo | Language | Role |
 |------|----------|------|
-| any-llm | Python | Core SDK -- common interface for LLM calls, supports direct provider calls AND gateway communication |
-| gateway | Python | Gateway service -- routes LLM requests via the any-llm SDK, captures observability data |
-| any-llm-rust | Rust | Rust SDK -- talks to the gateway |
-| any-llm-go | Go | Go SDK -- talks to the gateway |
-| any-llm-ts | TypeScript | TypeScript SDK -- talks to the gateway |
-| any-llm-platform | Python | Managed platform -- budgets, users, observability; pulls data from the gateway |
+| any-llm | Python | LLM-interaction library -- common interface for LLM calls; used by the otari gateway to reach providers, and supports direct provider calls |
+| otari | Python | Gateway service -- routes LLM requests via the any-llm library, captures observability data |
+| otari-sdk-python | Python | Python SDK -- client that talks to the otari gateway |
+| otari-sdk-rust | Rust | Rust SDK -- talks to the gateway |
+| otari-sdk-go | Go | Go SDK -- talks to the gateway |
+| otari-sdk-ts | TypeScript | TypeScript SDK -- talks to the gateway |
+| otari-ai | Python | Managed platform -- budgets, users, observability; pulls data from the gateway |
 
 ## Dependency graph
 
 ```
-any-llm-platform --> gateway --> any-llm (Python SDK)
-any-llm-rust -----> gateway
-any-llm-go -------> gateway
-any-llm-ts -------> gateway
-any-llm (Python) -> providers (OpenAI, Anthropic, etc.) directly OR via gateway
+otari-ai --> otari --> any-llm --> providers (OpenAI, Anthropic, etc.)
+otari-sdk-python -----> otari
+otari-sdk-rust -------> otari
+otari-sdk-go ---------> otari
+otari-sdk-ts -> otari
 ```
 
 ## Key facts
-- The Python SDK (any-llm) is the most capable: it talks to providers directly AND through the gateway.
-- The Rust, Go, and TypeScript SDKs primarily talk to the gateway.
-- The gateway uses the Python SDK internally to reach LLM providers.
+- `any-llm` is the LLM-interaction library: the otari gateway imports it to reach providers; it also supports direct provider calls.
+- The Python, Rust, Go, and TypeScript SDKs (otari-sdk-*) are clients that talk to the otari gateway over HTTP.
 - The platform sits on top and manages budgets/users/observability by querying the gateway.
 - Changes to the gateway API surface affect ALL SDKs.
-- Changes to the Python SDK can affect the gateway (which imports it).
+- Changes to the any-llm library can affect the gateway (which imports it).
 """
 
 # ── Pipeline tunables ─────────────────────────────────────────────────
@@ -260,6 +282,13 @@ CLASSIFIER_TIMEOUT: int = _env_int("ORCHESTRATOR_CLASSIFIER_TIMEOUT", 120)
 
 BUILD_PHASE_TIMEOUT: int = _env_int("ORCHESTRATOR_BUILD_PHASE_TIMEOUT", 5400)
 """Seconds before the build phase tmux wait times out (default 90 min)."""
+
+OTARI_UI_DEV_URL: str = os.environ.get("OTARI_UI_DEV_URL", "http://localhost:5181")
+"""Base URL of the running otari-ai web UI dev server.  The designer
+agent navigates this with Playwright (when reachable) to ground visual
+and interaction designs in existing screens.  The default matches the
+otari-ai frontend dev port; override via ``OTARI_UI_DEV_URL`` if the
+repo's dev server binds elsewhere."""
 
 
 # ── agent-pragma integration ─────────────────────────────────────────
@@ -332,12 +361,44 @@ def headless_env() -> dict[str, str]:
     """Return ``os.environ`` copy with the sandbox config injected.
 
     Use as ``env=headless_env()`` when calling ``subprocess.run`` to
-    spawn a headless ``opencode run`` for spec phases (PM, designer,
-    architect).  Ensures the child session cannot wander outside its
-    own working directory and hang on unanswerable permission prompts.
+    spawn a headless ``opencode run`` for spec phases (PM, architect).
+    Ensures the child session cannot wander outside its own working
+    directory and hang on unanswerable permission prompts.
+
+    The designer phase uses ``designer_headless_env()`` instead because
+    its Playwright MCP browsing needs filesystem access outside the
+    session cwd (browser profile + tool-output dirs).
     """
     env = os.environ.copy()
     env["OPENCODE_CONFIG_CONTENT"] = HEADLESS_SANDBOX_CONFIG_JSON
+    return env
+
+
+# The designer may navigate a running web UI via the Playwright MCP.
+# That MCP launches a headless browser whose profile and tool-output
+# directories live outside the session cwd, so the strict
+# ``{"*": "deny"}`` external-directory rule would deadlock the headless
+# run on an unanswerable permission prompt.  Relax that single gate to
+# ``"allow"`` for the designer while keeping the rest of the sandbox.
+# (Network access to ``localhost`` is not gated by ``external_directory``.)
+DESIGNER_SANDBOX_CONFIG_JSON: str = json.dumps(
+    {
+        "$schema": "https://opencode.ai/config.json",
+        "permission": {"external_directory": {"*": "allow"}},
+    }
+)
+
+
+def designer_headless_env() -> dict[str, str]:
+    """Return ``os.environ`` copy with the designer sandbox injected.
+
+    Use as ``env=designer_headless_env()`` for the headless designer
+    pass.  Unlike :func:`headless_env`, it permits external-directory
+    access so the Playwright MCP can drive a headless browser without
+    deadlocking on an unanswerable permission prompt.
+    """
+    env = os.environ.copy()
+    env["OPENCODE_CONFIG_CONTENT"] = DESIGNER_SANDBOX_CONFIG_JSON
     return env
 
 

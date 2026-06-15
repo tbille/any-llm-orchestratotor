@@ -86,6 +86,107 @@ def ensure_repos_cloned(paths: ProjectPaths) -> None:
                 )
 
 
+# ── Pull (update clones to latest) ────────────────────────────────────
+
+
+def pull_repos(paths: ProjectPaths) -> dict[str, str]:
+    """Fast-forward every cloned repo's default branch to origin.
+
+    For each repository under ``repos/`` this:
+    1. Fetches the default branch from origin.
+    2. Fast-forwards the local default branch to ``origin/<default_branch>``.
+
+    The fast-forward is deliberately non-destructive: repos with
+    uncommitted changes, a checked-out non-default branch, or local
+    commits that diverge from origin are skipped rather than reset.  This
+    keeps ``pull`` safe to run at any time without clobbering local work.
+
+    Returns:
+        Mapping of repo name -> outcome string (one of ``"updated"``,
+        ``"up-to-date"``, ``"skipped (...)"`` or ``"error (...)"``).
+    """
+    paths.repos_dir.mkdir(parents=True, exist_ok=True)
+    results: dict[str, str] = {}
+
+    for repo in REPOS:
+        dest = paths.repo_path(repo.name)
+        if not dest.exists() or not (dest / ".git").exists():
+            results[repo.name] = "skipped (not cloned)"
+            print(f"  [skip] {repo.name} — not cloned")
+            continue
+
+        base = repo.default_branch
+
+        with _repo_lock(paths, repo.name):
+            # Refuse to touch a dirty working tree.
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=str(dest),
+                capture_output=True,
+                text=True,
+            )
+            if status.returncode == 0 and status.stdout.strip():
+                results[repo.name] = "skipped (uncommitted changes)"
+                print(f"  [skip] {repo.name} — uncommitted changes")
+                continue
+
+            # Only fast-forward when the default branch is checked out.
+            current = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=str(dest),
+                capture_output=True,
+                text=True,
+            )
+            current_branch = current.stdout.strip() if current.returncode == 0 else ""
+            if current_branch != base:
+                results[repo.name] = f"skipped (on {current_branch or '???'})"
+                print(
+                    f"  [skip] {repo.name} — on {current_branch or '???'}, "
+                    f"expected {base}"
+                )
+                continue
+
+            # Fetch the default branch.
+            fetch = subprocess.run(
+                ["git", "fetch", "origin", base],
+                cwd=str(dest),
+                capture_output=True,
+                text=True,
+            )
+            if fetch.returncode != 0:
+                results[repo.name] = "error (fetch failed)"
+                print(
+                    f"  [error] {repo.name} — fetch failed: {fetch.stderr.strip()}",
+                    file=sys.stderr,
+                )
+                continue
+
+            # Fast-forward only.  `--ff-only` fails (non-zero) when the
+            # local branch has diverged, which we surface as a skip.
+            merge = subprocess.run(
+                ["git", "merge", "--ff-only", f"origin/{base}"],
+                cwd=str(dest),
+                capture_output=True,
+                text=True,
+            )
+            if merge.returncode != 0:
+                results[repo.name] = "skipped (diverged, needs manual merge)"
+                print(
+                    f"  [skip] {repo.name} — local {base} diverged from origin, "
+                    f"manual merge required"
+                )
+                continue
+
+            if "Already up to date" in merge.stdout:
+                results[repo.name] = "up-to-date"
+                print(f"  [ok]   {repo.name} — already up to date")
+            else:
+                results[repo.name] = "updated"
+                print(f"  [pull] {repo.name} — fast-forwarded {base} to origin")
+
+    return results
+
+
 # ── Worktrees ─────────────────────────────────────────────────────────
 
 

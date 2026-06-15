@@ -4,18 +4,19 @@
 
 # totomisu
 
-Multi-repo orchestrator for the [any-llm ecosystem](https://github.com/mozilla-ai). Coordinates feature work, bug fixes, and cross-repo changes across all six repositories from a single entry point.
+Multi-repo orchestrator for the [otari ecosystem](https://github.com/mozilla-ai). Coordinates feature work, bug fixes, and cross-repo changes across all seven repositories from a single entry point.
 
 ## Repositories
 
 | Repo | Language | Role |
 |------|----------|------|
-| [any-llm](https://github.com/mozilla-ai/any-llm) | Python | Core SDK -- common interface for LLM calls |
-| [gateway](https://github.com/mozilla-ai/gateway) | Python | Gateway service -- routes LLM requests, captures observability |
-| [any-llm-rust](https://github.com/mozilla-ai/any-llm-rust) | Rust | Rust SDK -- talks to the gateway |
-| [any-llm-go](https://github.com/mozilla-ai/any-llm-go) | Go | Go SDK -- talks to the gateway |
-| [any-llm-ts](https://github.com/mozilla-ai/any-llm-ts) | TypeScript | TypeScript SDK -- talks to the gateway |
-| [any-llm-platform](https://github.com/mozilla-ai/any-llm-platform) | Python | Platform -- budgets, users, observability |
+| [any-llm](https://github.com/mozilla-ai/any-llm) | Python | LLM-interaction library -- common interface for LLM calls; used by the otari gateway |
+| [otari](https://github.com/mozilla-ai/otari) | Python | Gateway service -- routes LLM requests, captures observability |
+| [otari-sdk-python](https://github.com/mozilla-ai/otari-sdk-python) | Python | Python SDK -- talks to the gateway |
+| [otari-sdk-rust](https://github.com/mozilla-ai/otari-sdk-rust) | Rust | Rust SDK -- talks to the gateway |
+| [otari-sdk-go](https://github.com/mozilla-ai/otari-sdk-go) | Go | Go SDK -- talks to the gateway |
+| [otari-sdk-ts](https://github.com/mozilla-ai/otari-sdk-ts) | TypeScript | TypeScript SDK -- talks to the gateway |
+| [otari-ai](https://github.com/mozilla-ai/otari-ai) | Python | Platform -- budgets, users, observability |
 
 ## Installation
 
@@ -58,7 +59,7 @@ totomisu init
 This will:
 - Ask you where the workspace should be created (or pass a directory: `totomisu init ~/my-workspace`)
 - Create the `repos/` and `specs/` directories
-- Clone all six ecosystem repos
+- Clone all seven ecosystem repos
 - Copy the bundled agent definitions into the workspace
 - Write a global config so `totomisu` works from anywhere
 
@@ -66,7 +67,7 @@ This will:
 
 ```sh
 # From a GitHub issue
-totomisu run --issue https://github.com/mozilla-ai/any-llm/issues/123
+totomisu run --issue https://github.com/mozilla-ai/otari-sdk-python/issues/123
 
 # From a free-form prompt
 totomisu run --prompt "Add batch API support to all SDKs"
@@ -86,15 +87,32 @@ totomisu run --resume add-batch-api --skip-to build
 
 # Check CI status for all repos (or a specific one)
 totomisu run --resume add-batch-api --ci-check
-totomisu run --resume add-batch-api --ci-check any-llm
+totomisu run --resume add-batch-api --ci-check otari-sdk-python
 
 # Fix PR review comments
 totomisu run --resume add-batch-api --fix-pr
-totomisu run --resume add-batch-api --fix-pr gateway
+totomisu run --resume add-batch-api --fix-pr otari
 
 # Fix cross-review findings
 totomisu run --resume add-batch-api --fix-cross-review
-totomisu run --resume add-batch-api --fix-cross-review any-llm-ts
+totomisu run --resume add-batch-api --fix-cross-review otari-sdk-ts
+```
+
+### otari-ai dev server
+
+Run the `otari-ai` dev server (`make dev`) from a session's worktree
+(`specs/<slug>/repos/otari-ai`). The server runs in a tmux session that stays
+alive when you detach (Ctrl-B D); stop it explicitly with `dev-stop`.
+
+```sh
+# Launch `make dev` in tmux and attach (re-attaches if already running)
+totomisu dev add-batch-api
+
+# Kill the `make dev` tmux session
+totomisu dev-stop add-batch-api
+
+# Run `make clean` (stops a running dev session first)
+totomisu dev-clean add-batch-api
 ```
 
 ### CLI flags
@@ -128,7 +146,7 @@ Input ─> Triage ─────────┼─ complex-bug ──> Architec
                                               Build (per-repo, parallel)
                               ┌──────────────────┼──────────────────┐
                               v                  v                  v
-                          any-llm            gateway           any-llm-ts
+                      otari-sdk-python       otari        otari-sdk-ts
                         ┌──────────┐       ┌──────────┐      ┌──────────┐
                         │ engineer │       │ engineer │      │ engineer │
                         │ test     │       │ test     │      │ test     │
@@ -214,11 +232,12 @@ After `totomisu init`, the workspace contains:
 ├── .opencode/agents/               # Agent definitions (copied from package)
 ├── repos/                          # Cloned upstream repos
 │   ├── any-llm/
-│   ├── gateway/
-│   ├── any-llm-rust/
-│   ├── any-llm-go/
-│   ├── any-llm-ts/
-│   └── any-llm-platform/
+│   ├── otari/
+│   ├── otari-sdk-python/
+│   ├── otari-sdk-rust/
+│   ├── otari-sdk-go/
+│   ├── otari-sdk-ts/
+│   └── otari-ai/
 └── specs/                          # Per-feature workspaces (created during runs)
     └── <slug>/
         ├── input.md
@@ -273,7 +292,7 @@ Each feature is fully isolated by slug -- separate spec directories, worktrees, 
 
 ```sh
 # Terminal 1: complete interactive phases for Feature A
-totomisu run --issue https://github.com/mozilla-ai/any-llm/issues/123
+totomisu run --issue https://github.com/mozilla-ai/otari-sdk-python/issues/123
 
 # Terminal 2: start Feature B once A's interactive phases are done
 totomisu run --prompt "Add rate limiting to the gateway"

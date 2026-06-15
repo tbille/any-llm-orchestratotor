@@ -12,6 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from collections.abc import Generator
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -207,7 +208,7 @@ def update_phase(
         status: "pending", "running", "done", "failed", "skipped".
         paths: Project paths.
         repo_statuses: Optional per-repo status map, e.g.
-            ``{"any-llm": "running", "gateway": "done"}``.
+            ``{"otari-sdk-python": "running", "otari": "done"}``.
     """
     with _status_lock(slug, paths):
         data = load_status(slug, paths)
@@ -292,6 +293,84 @@ def update_repo_step(
             data["current_phase"] = "build"
 
         _save_status(slug, data, paths)
+
+
+def set_repo_pr_url(
+    slug: str,
+    repo_name: str,
+    pr_url: str,
+    paths: ProjectPaths,
+) -> None:
+    """Persist a PR URL in status.json under ``repo_progress``.
+
+    Stored alongside the repo step so the dashboard can display PR links
+    without querying ``gh pr view`` (which is rate-limited).
+    """
+    with _status_lock(slug, paths):
+        data = load_status(slug, paths)
+        if data is None:
+            return
+
+        repo_progress = data.setdefault("repo_progress", {})
+        entry = repo_progress.setdefault(repo_name, {})
+        entry["pr_url"] = pr_url
+        entry["updated_at"] = _now()
+
+        _save_status(slug, data, paths)
+
+
+def set_repo_pr_merged(
+    slug: str,
+    repo_name: str,
+    paths: ProjectPaths,
+) -> None:
+    """Mark a repo's PR as merged in status.json.
+
+    Once persisted, the dashboard stops making any ``gh`` API calls for
+    this repo — merged is a terminal state.
+    """
+    with _status_lock(slug, paths):
+        data = load_status(slug, paths)
+        if data is None:
+            return
+
+        repo_progress = data.setdefault("repo_progress", {})
+        entry = repo_progress.setdefault(repo_name, {})
+        entry["pr_merged"] = True
+        entry["updated_at"] = _now()
+
+        _save_status(slug, data, paths)
+
+
+@dataclass(frozen=True)
+class CachedPRInfo:
+    """Cached PR metadata read from status.json."""
+
+    url: str | None
+    merged: bool
+
+
+def get_cached_pr_info(
+    slug: str,
+    repo_names: list[str],
+    paths: ProjectPaths,
+) -> dict[str, CachedPRInfo]:
+    """Return cached PR URLs and merged state from status.json.
+
+    Returns a dict of ``repo_name -> CachedPRInfo``.
+    """
+    data = load_status(slug, paths)
+    if data is None:
+        return {name: CachedPRInfo(url=None, merged=False) for name in repo_names}
+
+    repo_progress = data.get("repo_progress", {})
+    return {
+        name: CachedPRInfo(
+            url=repo_progress.get(name, {}).get("pr_url"),
+            merged=repo_progress.get(name, {}).get("pr_merged", False),
+        )
+        for name in repo_names
+    }
 
 
 # ── Cancel feature ────────────────────────────────────────────────────
@@ -519,39 +598,77 @@ _GH_TIMEOUT = 10  # seconds – prevents a hung gh call from blocking the API
 
 def _query_single_repo_pr(
     wt_path: Path,
+    cached_url: str | None = None,
+    cached_merged: bool = False,
 ) -> dict:
     """Query ``gh`` for a single repo's PR URL, CI status, rebase and merge state.
+
+    When *cached_merged* is ``True`` the PR is in a terminal state — no
+    ``gh`` calls are made at all and a static result is returned
+    immediately.
+
+    When *cached_url* is provided (but not merged), ``gh pr view`` still
+    runs for merge/rebase state, but the URL field comes from the cache.
 
     Returns ``{"url": ..., "ci": "pass"|"fail"|"pending"|"none",
     "needs_rebase": bool, "merged": bool}``.
     """
-    # Get PR URL, merge-state, and PR state in a single gh call.
-    url: str | None = None
+    # ── Terminal state: merged PRs never change ──────────────────────
+    if cached_merged:
+        return {
+            "url": cached_url,
+            "ci": "pass",
+            "needs_rebase": False,
+            "merged": True,
+        }
+
+    url: str | None = cached_url
     needs_rebase = False
     merged = False
-    try:
-        pr_result = subprocess.run(
-            ["gh", "pr", "view", "--json", "url,mergeStateStatus,state"],
-            cwd=str(wt_path),
-            capture_output=True,
-            text=True,
-            timeout=_GH_TIMEOUT,
-        )
-        if pr_result.returncode == 0:
-            try:
-                pr_data = json.loads(pr_result.stdout)
-                url = pr_data.get("url")
-                merge_state = (pr_data.get("mergeStateStatus") or "").upper()
-                # BEHIND = branch is behind base, needs rebase.
-                # DIRTY  = merge conflicts exist, also needs rebase.
-                needs_rebase = merge_state in ("BEHIND", "DIRTY")
-                # Detect merged PRs from the state field.
-                pr_state = (pr_data.get("state") or "").upper()
-                merged = pr_state == "MERGED"
-            except json.JSONDecodeError:
-                url = None
-    except subprocess.TimeoutExpired:
-        url = None
+
+    if cached_url:
+        # We already know the URL.  Only fetch merge/rebase state.
+        try:
+            pr_result = subprocess.run(
+                ["gh", "pr", "view", "--json", "mergeStateStatus,state"],
+                cwd=str(wt_path),
+                capture_output=True,
+                text=True,
+                timeout=_GH_TIMEOUT,
+            )
+            if pr_result.returncode == 0:
+                try:
+                    pr_data = json.loads(pr_result.stdout)
+                    merge_state = (pr_data.get("mergeStateStatus") or "").upper()
+                    needs_rebase = merge_state in ("BEHIND", "DIRTY")
+                    pr_state = (pr_data.get("state") or "").upper()
+                    merged = pr_state == "MERGED"
+                except json.JSONDecodeError:
+                    pass
+        except subprocess.TimeoutExpired:
+            pass
+    else:
+        # No cached URL — full query.
+        try:
+            pr_result = subprocess.run(
+                ["gh", "pr", "view", "--json", "url,mergeStateStatus,state"],
+                cwd=str(wt_path),
+                capture_output=True,
+                text=True,
+                timeout=_GH_TIMEOUT,
+            )
+            if pr_result.returncode == 0:
+                try:
+                    pr_data = json.loads(pr_result.stdout)
+                    url = pr_data.get("url")
+                    merge_state = (pr_data.get("mergeStateStatus") or "").upper()
+                    needs_rebase = merge_state in ("BEHIND", "DIRTY")
+                    pr_state = (pr_data.get("state") or "").upper()
+                    merged = pr_state == "MERGED"
+                except json.JSONDecodeError:
+                    url = None
+        except subprocess.TimeoutExpired:
+            url = None
 
     # Get CI status.  gh pr checks uses "state" not "conclusion".
     ci = "none"
@@ -602,37 +719,71 @@ def get_pr_info_for_feature(
     Returns a map of repo name -> {"url": ..., "ci": "pass"|"fail"|"pending"|"none",
     "needs_rebase": bool, "merged": bool}.
 
+    Cached PR metadata from ``status.json`` is used to:
+    - Display PR links even when the GitHub API is rate-limited.
+    - **Skip all ``gh`` calls** for repos whose PRs are already merged
+      (terminal state).
+
     Each ``gh`` invocation is capped at :data:`_GH_TIMEOUT` seconds so that
     a single slow or unreachable call cannot block the dashboard API response.
     Repos are queried in parallel to avoid O(n * timeout) latency.
     """
     info: dict[str, dict] = {}
-    to_query: dict[str, Path] = {}
+    to_query: dict[str, tuple[Path, CachedPRInfo]] = {}
+
+    # Load cached PR URLs and merged flags from status.json.
+    cached = get_cached_pr_info(slug, repo_names, paths)
 
     for name in repo_names:
+        ci = cached[name]
+
+        # Merged is terminal — no gh calls needed at all.
+        if ci.merged:
+            info[name] = {
+                "url": ci.url,
+                "ci": "pass",
+                "needs_rebase": False,
+                "merged": True,
+            }
+            continue
+
         wt_path = paths.worktree_path(slug, name)
         if not wt_path.exists():
             info[name] = {
-                "url": None,
+                "url": ci.url,
                 "ci": "none",
                 "needs_rebase": False,
                 "merged": False,
             }
         else:
-            to_query[name] = wt_path
+            to_query[name] = (wt_path, ci)
 
     if to_query:
         with ThreadPoolExecutor(max_workers=len(to_query)) as pool:
             futures = {
-                name: pool.submit(_query_single_repo_pr, wt_path)
-                for name, wt_path in to_query.items()
+                name: pool.submit(
+                    _query_single_repo_pr,
+                    wt_path,
+                    ci.url,
+                    ci.merged,
+                )
+                for name, (wt_path, ci) in to_query.items()
             }
             for name, future in futures.items():
                 try:
-                    info[name] = future.result(timeout=_GH_TIMEOUT + 2)
+                    result = future.result(timeout=_GH_TIMEOUT + 2)
+                    # If gh failed but we have a cached URL, ensure it's
+                    # returned so the dashboard can at least show the link.
+                    if result.get("url") is None and cached[name].url:
+                        result["url"] = cached[name].url
+                    # Persist newly-discovered merged state so future
+                    # polls skip this repo entirely.
+                    if result.get("merged") and not cached[name].merged:
+                        set_repo_pr_merged(slug, name, paths)
+                    info[name] = result
                 except Exception:
                     info[name] = {
-                        "url": None,
+                        "url": cached[name].url,
                         "ci": "none",
                         "needs_rebase": False,
                         "merged": False,

@@ -3,17 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>totorchestrator</title>
+<title>totomisu</title>
 <link rel="stylesheet" href="/static/css/theme.css">
 <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
 <body>
 
 <div class="header">
-  <h1>totorchestrator</h1>
+  <h1>totomisu</h1>
   <div class="meta">
     <span id="error-banner" class="error-banner"></span>
     <span id="notif-status"></span>
+    <button id="agent-names-btn" class="agent-names-btn" onclick="toggleAgentNames()">Meet the team</button>
     <input type="text" id="filter-input" class="filter-input" placeholder="Filter features..." oninput="applyFilter()">
     Auto-refresh: 5s &middot; <span id="updated"></span>
   </div>
@@ -38,12 +39,23 @@
   </div>
 </div>
 
+<footer class="site-footer">
+  <a href="#" id="play-totomisu" title="Play totomisu theme">&#127925;</a>
+  <audio id="totomisu-audio" src="/static/totomisu.m4a" preload="none"></audio>
+</footer>
+
 <script src="/static/js/markdown.js"></script>
 <script src="/static/js/dashboard.js"></script>
 <script>
 // Close log modal on Escape
 document.addEventListener("keydown", function(e) {
   if (e.key === "Escape") closeLogModal();
+});
+// Play / pause totomisu theme
+document.getElementById("play-totomisu").addEventListener("click", function(e) {
+  e.preventDefault();
+  var audio = document.getElementById("totomisu-audio");
+  if (audio.paused) { audio.play(); } else { audio.pause(); }
 });
 </script>
 </body>

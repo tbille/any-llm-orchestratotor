@@ -21,6 +21,20 @@ h1 { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
 }
 .error-banner.visible { display: inline-flex; align-items: center; gap: 8px; }
 
+/* Agent names toggle */
+.agent-names-btn {
+  font-size: 12px; padding: 4px 10px; border-radius: 4px;
+  background: var(--bg); color: var(--muted);
+  border: 1px solid var(--border); cursor: pointer;
+  font-family: var(--font-sans); transition: all 0.15s;
+}
+.agent-names-btn:hover { border-color: var(--accent); color: var(--text); }
+.agent-names-btn.active {
+  background: rgba(88,166,255,0.15); color: var(--blue);
+  border-color: rgba(88,166,255,0.4);
+}
+.agent-repo-hint { font-size: 10px; color: var(--muted); font-weight: normal; }
+
 /* Filter */
 .filter-input {
   font-size: 13px; padding: 4px 10px; border-radius: 4px;
@@ -192,3 +206,11 @@ h1 { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
 }
 .log-live-indicator { color: var(--green); font-weight: 500; }
 .log-live-indicator::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--green); margin-right: 6px; animation: pulse 2s ease-in-out infinite; }
+
+/* Site footer */
+.site-footer {
+  text-align: center; padding: 24px 0 8px;
+  margin-top: 32px; border-top: 1px solid var(--border);
+  font-size: 20px;
+}
+.site-footer a { text-decoration: none; cursor: pointer; }

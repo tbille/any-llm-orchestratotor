@@ -17,6 +17,47 @@ const PHASE_NOTIFY_LABELS = {
   architect: "Architect is waiting for guidance",
 };
 
+// ── Agent names (joke mode) ─────────────────────────────
+
+let agentNamesOn = false;
+
+const AGENT_PHASE_NAMES = {
+  pm: "John",
+  debate: "Sandra",
+  designer: "Hasan",
+  architect: "Ale",
+  "cross-review": "Caroline",
+  "cross-review-fix": "Kevin",
+};
+
+const AGENT_BUILDER_NAMES = {
+  "any-llm": "Nathan",
+  "otari-ai": "Dimitris",
+  otari: "Toto",
+  "otari-sdk-ts": "Mario",
+  "otari-sdk-rust": "Raz",
+  "otari-sdk-go": "Peter",
+  "otari-sdk-python": "Nathan",
+};
+
+function toggleAgentNames() {
+  agentNamesOn = !agentNamesOn;
+  const btn = document.getElementById("agent-names-btn");
+  if (btn) btn.classList.toggle("active", agentNamesOn);
+  if (prevData) render(prevData);
+}
+
+function agentLabel(phase, originalLabel) {
+  if (!agentNamesOn) return originalLabel;
+  const name = AGENT_PHASE_NAMES[phase];
+  return name ? name : originalLabel;
+}
+
+function agentRepoName(repo) {
+  if (!agentNamesOn) return repo;
+  return AGENT_BUILDER_NAMES[repo] || repo;
+}
+
 // ── State ───────────────────────────────────────────────
 
 let prevData = null;
@@ -366,7 +407,7 @@ function buildPhaseBar(f, all_phases, phases_by_type, phase_labels) {
     if (!applicable.includes(p)) return "";
     const ps = (f.phases && f.phases[p]) || {};
     const st = ps.status || "pending";
-    let label = phase_labels[p] || p;
+    let label = agentLabel(p, phase_labels[p] || p);
     if (p === "build" && totalRepos > 0) {
       label += ' <span class="build-count">' + doneCount + "/" + totalRepos + "</span>";
     }
@@ -440,7 +481,7 @@ function buildRepoRows(f) {
     }
 
     return "<tr id=\"row-" + f.slug + "-" + r + "\">" +
-      "<td>" + chevronHtml + "<strong>" + r + "</strong> " + logSize + "</td>" +
+      "<td>" + chevronHtml + "<strong>" + agentRepoName(r) + "</strong> " + (agentNamesOn ? '<span class="agent-repo-hint">' + r + "</span> " : "") + logSize + "</td>" +
       '<td><div class="repo-steps">' + stepsHtml + elapsed + histHtml + "</div></td>" +
       "<td>" + prLink + repoActions + "</td>" +
       "<td>" + (pr.url ? (pr.merged ? '<span class="status-dot dot-merged"></span>merged' : (pr.needs_rebase ? '<span class="status-dot dot-rebase"></span>needs rebase · ' : '') + '<span class="status-dot dot-' + ciSt + '"></span>' + ciSt) : "") + "</td>" +
@@ -449,23 +490,25 @@ function buildRepoRows(f) {
   }).join("");
 }
 
-function buildCostHtml(costs) {
-  if (!costs || !costs.total_cost || costs.total_cost <= 0) return "";
-  const repoCosts = Object.entries(costs.by_repo || {})
-    .sort((a, b) => b[1].cost - a[1].cost)
-    .map(([name, d]) => '<span class="cost-repo">' + name + ": $" + d.cost.toFixed(2) + "</span>")
-    .join(" &middot; ");
-  const outputTok = costs.total_output_tokens || 0;
-  const tokStr = outputTok >= 1000000 ? (outputTok / 1000000).toFixed(1) + "M" :
-    outputTok >= 1000 ? (outputTok / 1000).toFixed(1) + "K" : outputTok;
-  return '<div class="cost-bar">' +
-    '<span class="cost-total">$' + costs.total_cost.toFixed(2) + "</span>" +
-    '<span class="cost-detail">' + tokStr + " output tokens &middot; " +
-    (costs.sessions || 0) + " sessions &middot; " +
-    (costs.messages || 0) + " messages</span>" +
-    (repoCosts ? '<div style="width:100%">' + repoCosts + "</div>" : "") +
-    "</div>";
-}
+// -- Cost UI commented out for now --
+// function buildCostHtml(costs) {
+//   if (!costs || !costs.total_cost || costs.total_cost <= 0) return "";
+//   const repoCosts = Object.entries(costs.by_repo || {})
+//     .sort((a, b) => b[1].cost - a[1].cost)
+//     .map(([name, d]) => '<span class="cost-repo">' + name + ": $" + d.cost.toFixed(2) + "</span>")
+//     .join(" &middot; ");
+//   const outputTok = costs.total_output_tokens || 0;
+//   const tokStr = outputTok >= 1000000 ? (outputTok / 1000000).toFixed(1) + "M" :
+//     outputTok >= 1000 ? (outputTok / 1000).toFixed(1) + "K" : outputTok;
+//   return '<div class="cost-bar">' +
+//     '<span class="cost-total">$' + costs.total_cost.toFixed(2) + "</span>" +
+//     '<span class="cost-detail">' + tokStr + " output tokens &middot; " +
+//     (costs.sessions || 0) + " sessions &middot; " +
+//     (costs.messages || 0) + " messages</span>" +
+//     (repoCosts ? '<div style="width:100%">' + repoCosts + "</div>" : "") +
+//     "</div>";
+// }
+function buildCostHtml(costs) { return ""; }
 
 function buildCardActions(f, all_phases, phases_by_type) {
   const slug = f.slug;

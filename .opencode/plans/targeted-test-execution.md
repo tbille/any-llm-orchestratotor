@@ -50,11 +50,11 @@ RepoInfo(
 ),
 ```
 
-#### gateway (Python)
+#### otari (Python)
 
 ```python
 RepoInfo(
-    name="gateway",
+    name="otari",
     ...
     test_hints=(
         "Run ONLY the tests related to your changes: "
@@ -68,11 +68,11 @@ RepoInfo(
 ),
 ```
 
-#### any-llm-rust (Rust)
+#### otari-sdk-rust (Rust)
 
 ```python
 RepoInfo(
-    name="any-llm-rust",
+    name="otari-sdk-rust",
     ...
     test_hints=(
         "Run ONLY the tests related to your changes: "
@@ -86,11 +86,11 @@ RepoInfo(
 ),
 ```
 
-#### any-llm-go (Go)
+#### otari-sdk-go (Go)
 
 ```python
 RepoInfo(
-    name="any-llm-go",
+    name="otari-sdk-go",
     ...
     test_hints=(
         "Run ONLY the tests in packages you changed: "
@@ -104,11 +104,11 @@ RepoInfo(
 ),
 ```
 
-#### any-llm-ts (TypeScript)
+#### otari-sdk-ts (TypeScript)
 
 ```python
 RepoInfo(
-    name="any-llm-ts",
+    name="otari-sdk-ts",
     ...
     test_hints=(
         "Run ONLY the tests related to your changes. Check package.json "
@@ -122,11 +122,11 @@ RepoInfo(
 ),
 ```
 
-#### any-llm-platform (Python)
+#### otari-ai (Python)
 
 ```python
 RepoInfo(
-    name="any-llm-platform",
+    name="otari-ai",
     ...
     test_hints=(
         "Run ONLY the tests related to your changes: "

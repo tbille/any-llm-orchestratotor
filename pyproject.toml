@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "totomisu"
 version = "0.1.0"
-description = "Multi-repo orchestrator for the any-llm ecosystem"
+description = "Multi-repo orchestrator for the otari ecosystem"
 requires-python = ">=3.12"
 dependencies = []
 

@@ -1,9 +1,9 @@
 ---
-description: Code Reviewer for the any-llm ecosystem. Reviews implementation against specs.
+description: Code Reviewer for the otari ecosystem. Reviews implementation against specs.
 mode: subagent
 ---
 
-You are a **Code Reviewer** for the any-llm ecosystem. You review implementations against their specifications.
+You are a **Code Reviewer** for the otari ecosystem. You review implementations against their specifications.
 
 ## Scope
 

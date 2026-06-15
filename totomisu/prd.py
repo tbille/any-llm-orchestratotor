@@ -6,7 +6,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from totomisu.config import CAVEMAN_PROMPT, ProjectPaths, headless_env
+from totomisu.config import (
+    CAVEMAN_PROMPT,
+    OTARI_UI_DEV_URL,
+    ProjectPaths,
+    designer_headless_env,
+    headless_env,
+)
 
 
 # ── Phase 2: Product Manager (interactive TUI) ───────────────────────
@@ -106,15 +112,10 @@ def run_pm_headless(slug: str, paths: ProjectPaths) -> Path:
         f"- Missing acceptance criteria\n\n"
         f"Revise the PRD to address any issues found.\n"
         f"Write the final PRD to: prd.md (in the current directory)\n\n"
-        f"Use the standard PRD template:\n"
-        f"# PRD: <Title>\n"
-        f"## Problem Statement\n"
-        f"## User Stories\n"
-        f"## Scope (repos affected, out of scope)\n"
-        f"## Requirements (functional, non-functional)\n"
-        f"## Success Criteria\n"
-        f"## Open Questions\n"
-        f"## Cross-repo Impact Analysis"
+        f"Use the PRD template from your system prompt (the full version with\n"
+        f"functional/non-functional requirements and cross-repo impact analysis).\n"
+        f"You are running non-interactively: do NOT ask questions -- record any\n"
+        f"unknowns under the 'Open Questions' section instead."
     )
 
     file_args: list[str] = []
@@ -222,20 +223,36 @@ def run_designer(slug: str, paths: ProjectPaths) -> Path:
     print(f"  Working dir: {spec_dir}")
     print(f"  PRD:         prd.md")
     print(f"  Output:      design.md")
+    print(f"  UI dev URL:  {OTARI_UI_DEV_URL}")
     print("  The designer will create UX/DX proposals.")
+    print("  For otari-ai UI features, start the dev server first:")
+    print(f"    totomisu dev {slug}")
+    print("  so the designer can navigate the live UI with Playwright.")
     print("  Collaborate with the designer, then exit.")
     print("────────────────────────────────────────────────────\n")
 
     prompt = (
         f"Read the PRD at prd.md (in the current directory).\n\n"
-        f"ALL files you need to read or write are in the current directory.\n"
-        f"Do NOT access files outside this directory.\n\n"
+        f"ALL files you read or write are in the CURRENT WORKING DIRECTORY.\n"
+        f"Do NOT access files outside this directory. Do NOT use `../`,\n"
+        f"absolute paths, or parent-directory references. The ecosystem's\n"
+        f"upstream clones live elsewhere on disk and are OFF LIMITS; only the\n"
+        f"`repos/` inside the current dir is yours.\n\n"
         f"Create design proposals covering:\n"
         f"- User/developer flows and interactions\n"
         f"- SDK API ergonomics (method names, signatures, return types)\n"
         f"- Error handling UX\n"
         f"- CLI or configuration changes (if applicable)\n"
         f"- Documentation patterns\n\n"
+        f"## Live UI (otari-ai web-UI features only)\n"
+        f"If this feature touches the otari-ai web UI, use the Playwright\n"
+        f"browser tool to navigate the running dev server at {OTARI_UI_DEV_URL}\n"
+        f"and ground your visual/interaction design in the existing screens and\n"
+        f"components. If the URL is not reachable, proceed text-only and note\n"
+        f"that you could not inspect the live UI. Skip the browser entirely for\n"
+        f"pure SDK/CLI/gateway/backend features.\n\n"
+        f"If the feature has no developer-facing surface, say so and keep the\n"
+        f"design minimal rather than inventing scope.\n\n"
         f"Write the design document to: design.md (in the current directory)"
     )
 
@@ -257,6 +274,28 @@ def run_designer(slug: str, paths: ProjectPaths) -> Path:
 # ── Phase 3.6: Product Designer (headless) ────────────────────────────
 
 
+def _ui_dev_server_reachable(url: str, timeout: float = 2.0) -> bool:
+    """Return ``True`` if the otari-ai UI dev server answers at ``url``.
+
+    Used to decide whether the headless designer should attempt live-UI
+    navigation via Playwright.  Any HTTP response (even a 4xx/5xx) counts
+    as reachable; only connection failures / timeouts count as down.  We
+    never auto-start ``make dev`` -- the user starts it with
+    ``totomisu dev <slug>`` when they want UI grounding.
+    """
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=timeout):  # noqa: S310
+            return True
+    except urllib.error.HTTPError:
+        # Server responded with an error status -- it is up.
+        return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
 def run_designer_headless(slug: str, paths: ProjectPaths) -> Path:
     """Run the designer agent as a single headless pass.
 
@@ -267,12 +306,39 @@ def run_designer_headless(slug: str, paths: ProjectPaths) -> Path:
     design_file = paths.spec_file(slug, "design.md")
     prd_file = paths.spec_file(slug, "prd.md")
 
+    ui_up = _ui_dev_server_reachable(OTARI_UI_DEV_URL)
+
     print("\n── Phase 3.6: Designer (headless) ──────────────────")
     print(f"  Working dir: {spec_dir}")
     print(f"  PRD:         prd.md")
     print(f"  Output:      design.md")
+    print(f"  UI dev URL:  {OTARI_UI_DEV_URL} ({'up' if ui_up else 'not reachable'})")
+    if not ui_up:
+        print(f"  (start it with `totomisu dev {slug}` for live-UI grounding)")
     print("  Running headless (no TUI interaction)...")
     print("────────────────────────────────────────────────────\n")
+
+    if ui_up:
+        ui_block = (
+            f"## Live UI (otari-ai web-UI features only)\n"
+            f"The otari-ai web UI dev server is RUNNING at {OTARI_UI_DEV_URL}.\n"
+            f"If this feature touches that web UI, use the Playwright browser\n"
+            f"tool to navigate it and ground your visual/interaction design in\n"
+            f"the existing screens and components (reuse existing patterns and\n"
+            f"naming). The Playwright browser is the ONLY exception to the\n"
+            f"working-directory scope rule above: it may reach {OTARI_UI_DEV_URL}\n"
+            f"and use its own browser data dirs. Save any screenshots into the\n"
+            f"current directory. Skip the browser entirely for pure\n"
+            f"SDK/CLI/gateway/backend features.\n\n"
+        )
+    else:
+        ui_block = (
+            f"## Live UI\n"
+            f"The otari-ai web UI dev server is NOT reachable at\n"
+            f"{OTARI_UI_DEV_URL}. Do not attempt browser navigation. If this is\n"
+            f"a web-UI feature, design text-only and note that the live UI could\n"
+            f"not be inspected.\n\n"
+        )
 
     prompt = (
         f"{CAVEMAN_PROMPT}"
@@ -285,10 +351,12 @@ def run_designer_headless(slug: str, paths: ProjectPaths) -> Path:
         f"- `repos/<repo-name>/` (per-spec worktrees of affected repositories,\n"
         f"   available INSIDE the current directory). You MAY read these to\n"
         f"   ground your design in existing SDK patterns.\n"
-        f"You MUST NOT access any path outside the current directory.  Do\n"
-        f"NOT use `../`, absolute paths, or parent-directory references.\n"
-        f"The ecosystem's upstream clones live elsewhere on disk and are\n"
-        f"OFF LIMITS; only the `repos/` inside the current dir is yours.\n\n"
+        f"You MUST NOT access any path outside the current directory (the\n"
+        f"Playwright browser tool below is the only exception).  Do NOT use\n"
+        f"`../`, absolute paths, or parent-directory references for file\n"
+        f"access. The ecosystem's upstream clones live elsewhere on disk and\n"
+        f"are OFF LIMITS; only the `repos/` inside the current dir is yours.\n\n"
+        f"{ui_block}"
         f"## Task\n"
         f"Create design proposals covering:\n"
         f"- User/developer flows and interactions\n"
@@ -296,6 +364,8 @@ def run_designer_headless(slug: str, paths: ProjectPaths) -> Path:
         f"- Error handling UX\n"
         f"- CLI or configuration changes (if applicable)\n"
         f"- Documentation patterns\n\n"
+        f"If the feature has no developer-facing surface, say so and keep the\n"
+        f"design minimal rather than inventing scope.\n\n"
         f"Write the design document to: design.md (in the current directory)"
     )
 
@@ -315,7 +385,7 @@ def run_designer_headless(slug: str, paths: ProjectPaths) -> Path:
             prompt,
         ],
         cwd=str(spec_dir),
-        env=headless_env(),
+        env=designer_headless_env(),
     )
 
     if result.returncode != 0:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -15,6 +16,9 @@ from totomisu.config import (
     ProjectPaths,
 )
 from totomisu.parse import parse_cross_review_repos
+
+# Repo whose dev server the ``dev`` commands operate on.
+DEV_REPO = "otari-ai"
 
 
 # ── Tmux helpers ──────────────────────────────────────────────────────
@@ -138,6 +142,59 @@ def _tmux_kill_session(session: str) -> None:
     """Kill a tmux session if it exists."""
     subprocess.run(
         [TMUX, "kill-session", "-t", session],
+        capture_output=True,
+    )
+
+
+def _spawn_session_reaper(session: str, poll_interval: int = 5) -> None:
+    """Spawn a watchdog pane that kills *session* once all other panes are dead.
+
+    Used for detached (fire-and-forget) launches where no Python caller sticks
+    around to call ``_tmux_wait_for_all_panes`` + ``_tmux_kill_session``. The
+    reaper itself exits when it calls ``kill-session`` (which destroys it too).
+
+    The panes use ``remain-on-exit on`` so when their work command finishes
+    they become ``pane_dead=1`` but the session lingers. This reaper polls
+    ``list-panes`` periodically, ignores its own pane (via ``$TMUX_PANE``),
+    and kills the session once every non-reaper pane is dead.
+    """
+    # Inside the reaper pane, tmux sets $TMUX_PANE to its own pane id (e.g.
+    # "%12"). We grep it out of the list so we don't wait for ourselves.
+    # If list-panes output is empty (e.g. session already gone), bail out.
+    sess_q = shlex.quote(session)
+    reaper_script = (
+        f"while :; do "
+        f"out=$({TMUX} list-panes -t {sess_q} -F '#{{pane_id}} #{{pane_dead}}' "
+        f"2>/dev/null); "
+        f'if [ -z "$out" ]; then exit 0; fi; '
+        f'alive=$(printf "%s\\n" "$out" '
+        f'| grep -v "^$TMUX_PANE " '
+        f"| awk '$2 == 0' | wc -l); "
+        f'if [ "$alive" -eq 0 ]; then '
+        f"{TMUX} kill-session -t {sess_q}; exit 0; "
+        f"fi; "
+        f"sleep {poll_interval}; "
+        f"done"
+    )
+
+    # Split a new (detached) pane running the reaper loop.
+    subprocess.run(
+        [
+            TMUX,
+            "split-window",
+            "-t",
+            session,
+            "-d",
+            "/bin/sh",
+            "-c",
+            reaper_script,
+        ],
+        check=False,
+    )
+
+    # Re-tile so the reaper pane doesn't dominate the layout.
+    subprocess.run(
+        [TMUX, "select-layout", "-t", session, "tiled"],
         capture_output=True,
     )
 
@@ -511,3 +568,139 @@ def run_fix_pr_pipelines(
         _tmux_wait_for_all_panes(session_name)
         _tmux_kill_session(session_name)
         print("  All fix-PR pipelines done.\n")
+    else:
+        # Detached launch (e.g. from the dashboard): no Python caller will
+        # reap this session. Spawn an in-tmux watchdog pane that kills the
+        # session once all work panes have exited.
+        _spawn_session_reaper(session_name)
+
+
+# ── otari-ai dev server (`make dev`) ─────────────────────────────────
+#
+# These commands operate on the ``otari-ai`` worktree of a session
+# (``specs/<slug>/repos/otari-ai``).  ``make dev`` is a long-running dev
+# server, so unlike the build pipelines we launch it in a tmux session
+# that is NOT auto-reaped on detach: the user keeps the server alive by
+# detaching (Ctrl-B D) and tears it down explicitly with ``dev-stop``.
+
+
+def _dev_session_name(slug: str) -> str:
+    return f"dev-{slug}"
+
+
+def _dev_worktree(slug: str, paths: ProjectPaths) -> Path:
+    """Return the otari-ai worktree path, erroring if it does not exist."""
+    wt = paths.worktree_path(slug, DEV_REPO)
+    if not wt.exists():
+        print(
+            f"  [ERROR] No {DEV_REPO} worktree for session {slug!r} at {wt}.\n"
+            f"  Run the pipeline first (e.g. `totomisu run --resume {slug}`).",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    return wt
+
+
+def run_dev_server(slug: str, paths: ProjectPaths) -> None:
+    """Launch ``make dev`` for the session's otari-ai worktree in tmux.
+
+    The dev server is long-running; the tmux session is left alive on
+    detach so the server keeps running.  Use ``stop_dev_server`` to kill
+    it.  If the session already exists, we just re-attach to it.
+    """
+    for tool in ("make", "tmux"):
+        if shutil.which(tool) is None:
+            print(f"  [ERROR] {tool} not found on PATH.", file=sys.stderr)
+            raise SystemExit(1)
+
+    wt = _dev_worktree(slug, paths)
+    session_name = _dev_session_name(slug)
+
+    if _tmux_session_exists(session_name):
+        print(
+            f"  [info] dev session {session_name!r} already running, attaching.\n"
+            f"  Use Ctrl-B D to detach (server keeps running)."
+        )
+        _tmux_attach(session_name)
+        return
+
+    print("\n── Dev server (make dev) ───────────────────────────")
+    print(f"  Session: {session_name}")
+    print(f"  Repo:    {DEV_REPO}")
+    print(f"  Cwd:     {wt}")
+    print("────────────────────────────────────────────────────\n")
+
+    # Create a single-pane session running `make dev`.  We do NOT use
+    # `_tmux_launch_panes` here: that helper appends `; exit` and sets
+    # `remain-on-exit`, which is meant for batch jobs.  The dev server
+    # should keep running until explicitly stopped.
+    subprocess.run(
+        [
+            TMUX,
+            "new-session",
+            "-d",
+            "-s",
+            session_name,
+            "-c",
+            str(wt),
+            "-x",
+            "220",
+            "-y",
+            "50",
+            "/bin/sh",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [TMUX, "send-keys", "-t", f"{session_name}:0.0", "make dev", "Enter"],
+        check=True,
+    )
+
+    print("  Attaching to tmux session. Use Ctrl-B D to detach (server keeps running).")
+    print(f"  Stop with: totomisu dev-stop {slug}\n")
+    _tmux_attach(session_name)
+
+
+def stop_dev_server(slug: str, paths: ProjectPaths) -> bool:
+    """Kill the ``make dev`` tmux session for a session.
+
+    Returns ``True`` if a session was killed, ``False`` if none existed.
+    """
+    session_name = _dev_session_name(slug)
+    if not _tmux_session_exists(session_name):
+        print(f"  [info] No dev session running for {slug!r}.")
+        return False
+
+    _tmux_kill_session(session_name)
+    print(f"  Stopped dev session {session_name!r}.")
+    return True
+
+
+def clean_dev(slug: str, paths: ProjectPaths) -> None:
+    """Run ``make clean`` in the session's otari-ai worktree.
+
+    Stops any running dev session first (cleaning while the server runs
+    can conflict), then runs ``make clean`` in the foreground.
+    """
+    if shutil.which("make") is None:
+        print("  [ERROR] make not found on PATH.", file=sys.stderr)
+        raise SystemExit(1)
+
+    wt = _dev_worktree(slug, paths)
+
+    # Stop a running dev server first to avoid conflicts during clean.
+    stop_dev_server(slug, paths)
+
+    print("\n── Dev clean (make clean) ──────────────────────────")
+    print(f"  Repo: {DEV_REPO}")
+    print(f"  Cwd:  {wt}")
+    print("────────────────────────────────────────────────────\n")
+
+    result = subprocess.run(["make", "clean"], cwd=str(wt))
+    if result.returncode != 0:
+        print(
+            f"  [WARN] `make clean` exited with code {result.returncode}.",
+            file=sys.stderr,
+        )
+        raise SystemExit(result.returncode)
+    print("  Clean complete.\n")

@@ -153,7 +153,7 @@ def format_issue_as_input(issue: dict) -> str:
 # ── Triage classifier ────────────────────────────────────────────────
 
 _CLASSIFIER_PROMPT = """\
-You are a triage classifier for the any-llm ecosystem.
+You are a triage classifier for the otari ecosystem.
 
 {ecosystem}
 
@@ -202,7 +202,7 @@ Choose from: `"pm"`, `"debate"`, `"designer"`, `"architect"`.
 also include `"debate"`. Never include `"debate"` without `"pm"`.
 
 ### Repo names (use EXACTLY these)
-any-llm, gateway, any-llm-rust, any-llm-go, any-llm-ts, any-llm-platform
+any-llm, otari, otari-sdk-python, otari-sdk-rust, otari-sdk-go, otari-sdk-ts, otari-ai
 
 ### Slug rules
 - Lowercase kebab-case, max 40 characters

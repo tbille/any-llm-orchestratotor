@@ -94,6 +94,264 @@ def _get_head_sha(wt_path: Path) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+# ── Reply to & resolve PR comments ───────────────────────────────────
+
+
+def _reply_and_resolve_comments(
+    wt_path: Path,
+    pr_number: int,
+    new_inline: list[dict],
+    new_general: list[dict],
+    commit_sha: str,
+    repo_name: str,
+) -> None:
+    """Reply to each addressed comment and resolve its review thread.
+
+    For inline review comments:
+      1. Reply via REST: POST /repos/{owner}/{repo}/pulls/{number}/comments/{id}/replies
+      2. Resolve the thread via GraphQL ``resolveReviewThread`` mutation.
+
+    For general conversation comments:
+      Reply via ``gh pr comment`` (no thread to resolve).
+
+    Failures are logged but never abort the pipeline — this is best-effort.
+    """
+    import json as _json
+
+    short_sha = commit_sha[:10]
+    reply_body = f"Addressed in {short_sha}."
+
+    # ── Reply to & resolve inline review comments ────────────────────
+    # First, build a mapping from comment node_id -> thread node_id so
+    # we can resolve the right threads.
+    thread_map: dict[str, str] = {}  # comment_node_id -> thread_node_id
+    if new_inline:
+        thread_map = _fetch_thread_ids_for_comments(wt_path, pr_number, repo_name)
+
+    for ic in new_inline:
+        ic_id = ic.get("id")
+        ic_node_id = ic.get("node_id", "")
+        if not ic_id:
+            continue
+
+        # Reply to the comment.
+        reply_result = subprocess.run(
+            [
+                "gh",
+                "api",
+                "--method",
+                "POST",
+                f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments/{ic_id}/replies",
+                "-f",
+                f"body={reply_body}",
+            ],
+            cwd=str(wt_path),
+            capture_output=True,
+            text=True,
+        )
+        if reply_result.returncode != 0:
+            print(
+                f"  [{repo_name}] Failed to reply to inline comment {ic_id}: "
+                f"{reply_result.stderr.strip()[:120]}",
+                file=sys.stderr,
+            )
+
+        # Resolve the thread if we have its ID.
+        thread_id = thread_map.get(ic_node_id, "")
+        if thread_id:
+            _resolve_thread(wt_path, thread_id, repo_name)
+
+    # ── Reply to general conversation comments ───────────────────────
+    for comment in new_general:
+        comment_node_id = comment.get("id", "")
+        if not comment_node_id:
+            continue
+        author = comment.get("author", {}).get("login", "unknown")
+        original_body = comment.get("body", "").strip()
+        # Include a short snippet of the original comment for context.
+        snippet = original_body[:80]
+        if len(original_body) > 80:
+            snippet += "…"
+        general_reply = f"> @{author}: {snippet}\n\n{reply_body}"
+        _reply_to_issue_comment(wt_path, general_reply, repo_name)
+
+    commented = len(new_inline) + len(new_general)
+    if commented:
+        print(f"  [{repo_name}] Replied to {commented} comment(s) on PR.")
+
+
+def _fetch_thread_ids_for_comments(
+    wt_path: Path,
+    pr_number: int,
+    repo_name: str,
+) -> dict[str, str]:
+    """Fetch a mapping of comment node_id -> thread node_id via GraphQL.
+
+    Uses pagination to handle PRs with many review threads.
+    Returns an empty dict on any error.
+    """
+    import json as _json
+
+    # Query review threads on the PR and their first few comments to
+    # map comment node IDs to thread node IDs.
+    query = """
+    query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $number) {
+          reviewThreads(first: 100, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id
+              comments(first: 100) {
+                nodes { id }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
+    # Resolve owner/repo from the git remote.
+    nwo = _get_nwo(wt_path)
+    if not nwo:
+        return {}
+    owner, repo = nwo
+
+    mapping: dict[str, str] = {}
+    cursor: str | None = None
+
+    for _ in range(20):  # safety cap on pagination
+        gql_args = [
+            "gh",
+            "api",
+            "graphql",
+            "-F",
+            f"owner={owner}",
+            "-F",
+            f"repo={repo}",
+            "-F",
+            f"number={pr_number}",
+            "-f",
+            f"query={query}",
+        ]
+        if cursor:
+            gql_args += ["-F", f"cursor={cursor}"]
+        else:
+            gql_args += ["-F", "cursor=null"]
+
+        result = subprocess.run(
+            gql_args, cwd=str(wt_path), capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print(
+                f"  [{repo_name}] Failed to fetch review threads: "
+                f"{result.stderr.strip()[:120]}",
+                file=sys.stderr,
+            )
+            break
+
+        try:
+            gql_data = _json.loads(result.stdout)
+        except _json.JSONDecodeError:
+            break
+
+        threads_data = (
+            gql_data.get("data", {})
+            .get("repository", {})
+            .get("pullRequest", {})
+            .get("reviewThreads", {})
+        )
+        for thread in threads_data.get("nodes", []):
+            thread_id = thread.get("id", "")
+            for comment_node in thread.get("comments", {}).get("nodes", []):
+                comment_id = comment_node.get("id", "")
+                if comment_id and thread_id:
+                    mapping[comment_id] = thread_id
+
+        page_info = threads_data.get("pageInfo", {})
+        if page_info.get("hasNextPage"):
+            cursor = page_info.get("endCursor")
+        else:
+            break
+
+    return mapping
+
+
+def _resolve_thread(wt_path: Path, thread_id: str, repo_name: str) -> None:
+    """Resolve a single review thread via GraphQL mutation."""
+    import json as _json
+
+    mutation = """
+    mutation($threadId: ID!) {
+      resolveReviewThread(input: {threadId: $threadId}) {
+        thread { id isResolved }
+      }
+    }
+    """
+    result = subprocess.run(
+        [
+            "gh",
+            "api",
+            "graphql",
+            "-F",
+            f"threadId={thread_id}",
+            "-f",
+            f"query={mutation}",
+        ],
+        cwd=str(wt_path),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(
+            f"  [{repo_name}] Failed to resolve thread {thread_id}: "
+            f"{result.stderr.strip()[:120]}",
+            file=sys.stderr,
+        )
+
+
+def _reply_to_issue_comment(
+    wt_path: Path,
+    body: str,
+    repo_name: str,
+) -> None:
+    """Post a top-level comment on the PR referencing addressed feedback.
+
+    General PR comments are issue comments — they don't support threaded
+    replies.  We post a new comment that quotes the original for context.
+    ``gh pr comment`` discovers the PR automatically from the worktree.
+    """
+    result = subprocess.run(
+        ["gh", "pr", "comment", "--body", body],
+        cwd=str(wt_path),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(
+            f"  [{repo_name}] Failed to reply to general comment: "
+            f"{result.stderr.strip()[:120]}",
+            file=sys.stderr,
+        )
+
+
+def _get_nwo(wt_path: Path) -> tuple[str, str] | None:
+    """Return (owner, repo) from the git remote of *wt_path*."""
+    result = subprocess.run(
+        ["gh", "repo", "view", "--json", "owner,name", "--jq", ".owner.login,.name"],
+        cwd=str(wt_path),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    parts = result.stdout.strip().splitlines()
+    if len(parts) >= 2:
+        return parts[0], parts[1]
+    return None
+
+
 # ── Opencode runner ───────────────────────────────────────────────────
 
 
@@ -839,7 +1097,7 @@ def _try_deterministic_pr(
     paths: ProjectPaths,
     *,
     draft: bool = False,
-) -> bool:
+) -> str | None:
     """Attempt to create a PR using shell commands only (no AI agent).
 
     Steps:
@@ -848,15 +1106,16 @@ def _try_deterministic_pr(
     3. Generate a PR body from the spec and commit log.
     4. Create the PR via ``gh pr create``.
 
-    Returns True on success, False if the caller should fall back to
-    the AI agent (e.g. the repo has a complex PR template).
+    Returns the PR URL on success, or ``None`` if the caller should
+    fall back to the AI agent (e.g. the repo has a complex PR template
+    or the deterministic path failed).
     """
     from totomisu.pr import _find_pr_template
 
     # If the repo has a PR template, fall back to AI to fill it properly.
     template = _find_pr_template(wt_path)
     if template:
-        return False
+        return None
 
     repo_info = REPO_BY_NAME.get(repo_name)
     base_branch = repo_info.default_branch if repo_info else "main"
@@ -889,7 +1148,7 @@ def _try_deterministic_pr(
     )
     if push.returncode != 0:
         print(f"  [{repo_name}] git push failed: {push.stderr.strip()[:200]}")
-        return False
+        return None
 
     # 3. Generate PR title and body from commit log.
     log_result = subprocess.run(
@@ -971,11 +1230,11 @@ def _try_deterministic_pr(
     )
     if pr_result.returncode != 0:
         print(f"  [{repo_name}] gh pr create failed: {pr_result.stderr.strip()[:200]}")
-        return False
+        return None
 
     pr_url = pr_result.stdout.strip()
     print(f"  [{repo_name}] PR created: {pr_url}")
-    return True
+    return pr_url
 
 
 def step_pr(
@@ -991,13 +1250,17 @@ def step_pr(
     Falls back to the AI agent if the repo has a PR template or if
     the deterministic path fails.
     """
+    from totomisu.status import set_repo_pr_url
+
     wt_path = paths.worktree_path(slug, repo_name)
 
     # Rebase onto the latest base branch before pushing the PR.
     step_rebase_on_base(slug, repo_name, paths)
 
     # Fast path: no PR template, use shell commands.
-    if _try_deterministic_pr(slug, repo_name, wt_path, paths, draft=draft):
+    pr_url = _try_deterministic_pr(slug, repo_name, wt_path, paths, draft=draft)
+    if pr_url:
+        set_repo_pr_url(slug, repo_name, pr_url, paths)
         return
 
     # Slow path: fall back to AI agent (PR template or deterministic failure).
@@ -1045,6 +1308,20 @@ def step_pr(
     rc = _run_opencode(wt_path, prompt_file, file_args, log_file)
     if rc != 0:
         print(f"  [{repo_name}] PR agent exited with code {rc}", file=sys.stderr)
+
+    # Try to discover the PR URL the agent created and cache it.
+    try:
+        discover = subprocess.run(
+            ["gh", "pr", "view", "--json", "url", "--jq", ".url"],
+            cwd=str(wt_path),
+            capture_output=True,
+            text=True,
+            timeout=12,
+        )
+        if discover.returncode == 0 and discover.stdout.strip():
+            set_repo_pr_url(slug, repo_name, discover.stdout.strip(), paths)
+    except (subprocess.TimeoutExpired, Exception):
+        pass
 
 
 # ── Step: CI watch ────────────────────────────────────────────────────
@@ -1608,8 +1885,19 @@ def step_fix_pr(slug: str, repo_name: str, paths: ProjectPaths) -> None:
     else:
         print(f"  [{repo_name}] PR fixes pushed.")
 
-    # ── 7. Record addressed comments in manifest ─────────────────────
+    # ── 6b. Reply to addressed comments & resolve threads ─────────────
     commit_after = _get_head_sha(wt_path)
+    if push_result.returncode == 0 and pr_number and commit_after:
+        _reply_and_resolve_comments(
+            wt_path=wt_path,
+            pr_number=pr_number,
+            new_inline=new_inline,
+            new_general=new_general,
+            commit_sha=commit_after,
+            repo_name=repo_name,
+        )
+
+    # ── 7. Record addressed comments in manifest ─────────────────────
     if round_comment_ids:
         from datetime import datetime, timezone
 

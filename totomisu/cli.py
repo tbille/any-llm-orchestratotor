@@ -1,4 +1,4 @@
-"""Main CLI entry point for totomisu -- the any-llm multi-repo orchestrator.
+"""Main CLI entry point for totomisu -- the otari multi-repo orchestrator.
 
 Usage:
     totomisu init                              # set up a new workspace
@@ -6,6 +6,11 @@ Usage:
     totomisu run --prompt "description"        # start from a text prompt
     totomisu run --resume <slug>               # resume a previous run
     totomisu run --resume <slug> --skip-to build
+    totomisu dev <slug>                        # run `make dev` (otari-ai) for a session
+    totomisu dev-stop <slug>                    # stop the `make dev` tmux session
+    totomisu dev-clean <slug>                   # run `make clean` (stops dev first)
+    totomisu pull                              # update all clones to latest
+    totomisu reset [-y]                        # wipe repos+specs and re-init
     totomisu dashboard [--port 8080]           # launch the web dashboard
 """
 
@@ -24,6 +29,7 @@ from totomisu.config import (
     PRAGMA_VERSION,
     REPOS,
     WORKSPACE_MARKER,
+    ProjectPaths,
     get_package_data_path,
     get_project_paths,
 )
@@ -55,6 +61,7 @@ from totomisu.architect import (
 from totomisu.workspace import (
     create_worktrees,
     ensure_repos_cloned,
+    pull_repos,
     setup_engineer_context,
     update_worktrees,
     worktrees_exist,
@@ -89,7 +96,7 @@ SKIP_TO_PHASES = (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="totomisu",
-        description="Multi-repo orchestrator for the any-llm ecosystem.",
+        description="Multi-repo orchestrator for the otari ecosystem.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -177,6 +184,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print what would change without modifying any files.",
     )
 
+    # ── pull ──────────────────────────────────────────────────────
+    subparsers.add_parser(
+        "pull",
+        help=(
+            "Fast-forward every cloned repo's default branch to the latest "
+            "upstream. Skips repos with uncommitted changes or divergence."
+        ),
+    )
+
+    # ── reset ─────────────────────────────────────────────────────
+    reset_parser = subparsers.add_parser(
+        "reset",
+        help=(
+            "Destroy and rebuild the workspace: prune all worktrees, delete "
+            "repos/ and specs/, then re-run init to re-clone everything."
+        ),
+    )
+    reset_parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        default=False,
+        help="Skip the confirmation prompt (for unattended/scripted use).",
+    )
+
     # ── dashboard ─────────────────────────────────────────────────
     dash_parser = subparsers.add_parser(
         "dashboard",
@@ -188,6 +220,27 @@ def build_parser() -> argparse.ArgumentParser:
         default=8080,
         help="Port to listen on (default: 8080).",
     )
+
+    # ── dev ───────────────────────────────────────────────────────
+    dev_parser = subparsers.add_parser(
+        "dev",
+        help="Run `make dev` (otari-ai dev server) for a session's worktree.",
+    )
+    dev_parser.add_argument("slug", help="Session slug to run the dev server for.")
+
+    # ── dev-stop ──────────────────────────────────────────────────
+    dev_stop_parser = subparsers.add_parser(
+        "dev-stop",
+        help="Stop the running `make dev` tmux session for a session.",
+    )
+    dev_stop_parser.add_argument("slug", help="Session slug whose dev server to stop.")
+
+    # ── dev-clean ─────────────────────────────────────────────────
+    dev_clean_parser = subparsers.add_parser(
+        "dev-clean",
+        help="Run `make clean` in a session's otari-ai worktree (stops dev first).",
+    )
+    dev_clean_parser.add_argument("slug", help="Session slug to clean.")
 
     # ── _repo-runner (hidden, used by tmux panes) ─────────────────
     rr_parser = subparsers.add_parser("_repo-runner")
@@ -238,7 +291,21 @@ def _check_system_deps() -> list[str]:
     return missing
 
 
-_STOCK_OPENCODE_JSON: dict = {"$schema": "https://opencode.ai/config.json"}
+_STOCK_OPENCODE_JSON: dict = {
+    "$schema": "https://opencode.ai/config.json",
+    # Playwright MCP lets the designer agent navigate a running web UI
+    # (otari-ai frontend) to keep visual/interaction designs consistent
+    # with existing screens.  Enabled globally; only the designer agent
+    # is instructed to use it, so other agents simply ignore it.  Needs
+    # `npx`/Node on PATH; first run downloads the package + browsers.
+    "mcp": {
+        "playwright": {
+            "type": "local",
+            "command": ["npx", "-y", "@playwright/mcp@latest", "--headless"],
+            "enabled": True,
+        }
+    },
+}
 """Default contents of the workspace ``opencode.json`` file.
 
 Shared between ``cmd_init`` (writes it on first setup) and
@@ -415,7 +482,6 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     # Clone repos.
     print("\n  Cloning repositories...\n")
-    from totomisu.config import ProjectPaths
     from totomisu.workspace import ensure_repos_cloned
 
     paths = ProjectPaths(root=ws_dir)
@@ -1073,6 +1139,135 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(f"{'=' * 56}\n")
 
 
+# ── Pull command ──────────────────────────────────────────────────────
+
+
+def cmd_pull(args: argparse.Namespace) -> None:
+    """Fast-forward every cloned repo's default branch to latest upstream."""
+    print("\n── totomisu pull ───────────────────────────────────\n")
+
+    if shutil.which("git") is None:
+        print("  [ERROR] git not found on PATH.", file=sys.stderr)
+        sys.exit(1)
+
+    paths = get_project_paths()
+    print(f"  Workspace: {paths.root}\n")
+
+    results = pull_repos(paths)
+
+    updated = sum(1 for v in results.values() if v == "updated")
+    up_to_date = sum(1 for v in results.values() if v == "up-to-date")
+    skipped = sum(1 for v in results.values() if v.startswith("skipped"))
+    errors = sum(1 for v in results.values() if v.startswith("error"))
+
+    print(f"\n{'=' * 56}")
+    print(
+        f"  Summary: updated={updated} up-to-date={up_to_date} "
+        f"skipped={skipped} errors={errors}"
+    )
+    print(f"{'=' * 56}\n")
+
+    if errors:
+        sys.exit(1)
+
+
+# ── Reset command ─────────────────────────────────────────────────────
+
+
+def _prune_worktrees(paths: ProjectPaths) -> None:
+    """Detach git worktrees from each clone before wiping ``specs/``.
+
+    Worktrees created under ``specs/<slug>/repos/<repo>`` are registered
+    inside their parent clone's ``.git``.  Deleting the worktree
+    directories without telling git leaves dangling administrative
+    entries.  Removing the parent clone makes that moot, but we prune
+    first so a partial failure (e.g. ``repos/`` removed but ``specs/``
+    kept) does not leave the surviving clones in an inconsistent state.
+    """
+    repos_dir = paths.repos_dir
+    if not repos_dir.exists():
+        return
+
+    for repo in REPOS:
+        repo_dir = paths.repo_path(repo.name)
+        if not (repo_dir / ".git").exists():
+            continue
+        # `git worktree prune` only drops stale entries; force-remove each
+        # registered worktree first so the directories can be deleted.
+        listing = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+        )
+        if listing.returncode != 0:
+            continue
+        main_wt = str(repo_dir.resolve())
+        for line in listing.stdout.splitlines():
+            if not line.startswith("worktree "):
+                continue
+            wt = line.split(" ", 1)[1].strip()
+            if Path(wt).resolve() == Path(main_wt).resolve():
+                continue  # never remove the main working tree
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", wt],
+                cwd=str(repo_dir),
+                capture_output=True,
+            )
+        subprocess.run(
+            ["git", "worktree", "prune"],
+            cwd=str(repo_dir),
+            capture_output=True,
+        )
+
+
+def cmd_reset(args: argparse.Namespace) -> None:
+    """Wipe the workspace's repos and specs, then re-run ``init``.
+
+    Destroys all cloned repos under ``repos/`` and every session under
+    ``specs/`` (including their worktrees), then re-runs the init flow
+    against the same workspace directory to re-clone everything fresh.
+    Workspace-scoped assets (``.opencode/`` agents, ``.agent-pragma``,
+    ``opencode.json``, the ``.totomisu`` marker, and the global config)
+    are left in place -- init recreates anything missing.
+    """
+    print("\n── totomisu reset ──────────────────────────────────\n")
+
+    if shutil.which("git") is None:
+        print("  [ERROR] git not found on PATH.", file=sys.stderr)
+        sys.exit(1)
+
+    paths = get_project_paths()
+    ws_dir = paths.root
+    print(f"  Workspace: {ws_dir}\n")
+    print("  This will DELETE and rebuild:")
+    print(f"    - {paths.repos_dir}  (all cloned repos)")
+    print(f"    - {paths.specs_dir}  (all sessions and worktrees)")
+    print()
+
+    if not args.yes:
+        answer = input("  Type 'reset' to confirm: ").strip().lower()
+        if answer != "reset":
+            print("  Aborted. Nothing was deleted.")
+            sys.exit(0)
+
+    # Detach worktrees from their parent clones before deletion.
+    print("\n  Pruning worktrees...")
+    _prune_worktrees(paths)
+
+    # Wipe specs/ (sessions + worktree dirs) and repos/ (clones).
+    for target in (paths.specs_dir, paths.repos_dir):
+        if target.exists():
+            print(f"  Removing {target}")
+            shutil.rmtree(target, ignore_errors=True)
+
+    # Re-run init against the same workspace directory.  Reuse the
+    # existing init flow so repos are re-cloned and structure rebuilt.
+    print("\n  Re-running init...\n")
+    init_args = argparse.Namespace(directory=str(ws_dir))
+    cmd_init(init_args)
+
+
 # ── Dashboard command ─────────────────────────────────────────────────
 
 
@@ -1081,6 +1276,46 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
     from totomisu.dashboard_server import run_dashboard
 
     run_dashboard(port=args.port)
+
+
+# ── Dev commands (otari-ai `make dev`) ────────────────────────────────
+
+
+def _require_session(slug: str, paths: ProjectPaths) -> None:
+    """Exit with a clear error if the session's spec dir does not exist."""
+    if not paths.spec_dir(slug).exists():
+        print(
+            f"[ERROR] No session found for slug {slug!r} "
+            f"(missing specs/{slug}/).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def cmd_dev(args: argparse.Namespace) -> None:
+    """Run `make dev` for a session's otari-ai worktree."""
+    from totomisu.engineer import run_dev_server
+
+    paths = get_project_paths()
+    _require_session(args.slug, paths)
+    run_dev_server(args.slug, paths)
+
+
+def cmd_dev_stop(args: argparse.Namespace) -> None:
+    """Stop the `make dev` tmux session for a session."""
+    from totomisu.engineer import stop_dev_server
+
+    paths = get_project_paths()
+    stop_dev_server(args.slug, paths)
+
+
+def cmd_dev_clean(args: argparse.Namespace) -> None:
+    """Run `make clean` in a session's otari-ai worktree."""
+    from totomisu.engineer import clean_dev
+
+    paths = get_project_paths()
+    _require_session(args.slug, paths)
+    clean_dev(args.slug, paths)
 
 
 # ── Hidden _repo-runner command ───────────────────────────────────────
@@ -1131,8 +1366,18 @@ def main() -> None:
         cmd_update(args)
     elif args.command == "run":
         cmd_run(args)
+    elif args.command == "pull":
+        cmd_pull(args)
+    elif args.command == "reset":
+        cmd_reset(args)
     elif args.command == "dashboard":
         cmd_dashboard(args)
+    elif args.command == "dev":
+        cmd_dev(args)
+    elif args.command == "dev-stop":
+        cmd_dev_stop(args)
+    elif args.command == "dev-clean":
+        cmd_dev_clean(args)
     elif args.command == "_repo-runner":
         cmd_repo_runner(args)
     else:
